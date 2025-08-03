@@ -22,13 +22,24 @@ let db;
 
 // --- Helper function to format time ---
 const formatTime = (totalSeconds) => {
-    if (isNaN(totalSeconds) || totalSeconds < 0) {
+    if (isNaN(totalSeconds)) {
         return '00:00:00';
     }
+
+    const isNegative = totalSeconds < 0;
+    // Jika negatif, buat jadi positif untuk perhitungan
+    if (isNegative) {
+        totalSeconds = -totalSeconds;
+    }
+
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
     const s = Math.floor(totalSeconds % 60);
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+
+    const timeString = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    
+    // Tambahkan tanda minus di depan jika aslinya negatif
+    return isNegative ? `-${timeString}` : timeString;
 };
 
 // --- Sound Notification Function ---
@@ -297,7 +308,7 @@ function App() {
         if (!activity.isRunning || !activity.endTime) return activity.duration;
         const endTimeMs = activity.endTime.toMillis();
         const nowMs = Date.now();
-        return Math.max(0, Math.round((endTimeMs - nowMs) / 1000));
+        return Math.round(((endTimeMs - nowMs) / 1000));
     }, []);
 
     const updateActivityStatus = useCallback(async (activity, updates) => {
@@ -357,29 +368,29 @@ function App() {
         completionInProgress.current = null;
     }, [userId, getRemainingTime, updateActivityStatus]);
     
-    // --- Timer Completion Check Effect (THE FIX) ---
-    useEffect(() => {
-        // Hanya periksa jika timer global seharusnya berjalan
-        if (!isGlobalTimerRunningRef.current) {
-            return;
-        }
+    // // --- Timer Completion Check Effect (THE FIX) ---
+    // useEffect(() => {
+    //     // Hanya periksa jika timer global seharusnya berjalan
+    //     if (!isGlobalTimerRunningRef.current) {
+    //         return;
+    //     }
 
-        const runningActivity = activitiesRef.current.find(a => a.isRunning && !a.isCompleted);
+    //     const runningActivity = activitiesRef.current.find(a => a.isRunning && !a.isCompleted);
 
-        if (runningActivity) {
-            const remainingTime = getRemainingTime(runningActivity);
+    //     if (runningActivity) {
+    //         const remainingTime = getRemainingTime(runningActivity);
             
-            // Jika waktu habis, selesaikan tugas
-            if (remainingTime <= 0) {
-                // Gunakan ref 'completionInProgress' untuk mencegah pemanggilan ganda
-                if (completionInProgress.current !== runningActivity.id) {
-                    console.log(`Timer for "${runningActivity.title}" expired. Completing task.`);
-                    // Argumen 'true' menandakan sesi sedang berjalan, sehingga tugas berikutnya akan dimulai secara otomatis
-                    handleTaskCompletion(runningActivity, true);
-                }
-            }
-        }
-    }, [tick, getRemainingTime, handleTaskCompletion]); // Dijalankan setiap detik karena state 'tick'
+    //         // Jika waktu habis, selesaikan tugas
+    //         if (remainingTime <= 0) {
+    //             // Gunakan ref 'completionInProgress' untuk mencegah pemanggilan ganda
+    //             if (completionInProgress.current !== runningActivity.id) {
+    //                 console.log(`Timer for "${runningActivity.title}" expired. Completing task.`);
+    //                 // Argumen 'true' menandakan sesi sedang berjalan, sehingga tugas berikutnya akan dimulai secara otomatis
+    //                 handleTaskCompletion(runningActivity, true);
+    //             }
+    //         }
+    //     }
+    // }, [tick, getRemainingTime, handleTaskCompletion]); // Dijalankan setiap detik karena state 'tick'
 
     // --- Global Timer Tick ---
     useEffect(() => {
