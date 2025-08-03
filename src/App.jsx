@@ -487,6 +487,38 @@ function App() {
     // --- Firestore Actions ---
     const handleUpdateActivity = async (id, updatedData) => {
         if (!userId) return;
+
+        // --- LOGIKA BARU DIMULAI DI SINI ---
+        const activityToUpdate = activities.find(act => act.id === id);
+
+        // Jika tugas yang di-edit sedang berjalan, hitung ulang sisa waktu dan endTime
+        if (activityToUpdate && activityToUpdate.isRunning) {
+            const newInitialDuration = updatedData.initialDuration;
+            const remainingTimeNow = getRemainingTime(activityToUpdate);
+            
+            // Hitung waktu yang sudah dihabiskan pada sesi ini
+            const timeSpent = activityToUpdate.initialDuration - remainingTimeNow;
+            
+            // Hitung sisa waktu yang baru
+            const newRemainingTime = newInitialDuration - timeSpent;
+            
+            // Pastikan sisa waktu baru tidak negatif
+            if (newRemainingTime > 0) {
+                const newEndTime = new Date(Date.now() + newRemainingTime * 1000);
+                
+                // Tambahkan data baru untuk di-update
+                updatedData.duration = newRemainingTime;
+                updatedData.endTime = newEndTime;
+            } else {
+                // Jika durasi baru lebih kecil dari waktu yg sudah dihabiskan,
+                // langsung selesaikan saja tugasnya.
+                handleTaskCompletion(activityToUpdate, isGlobalTimerRunningRef.current);
+                setEditingActivity(null); // Tutup modal edit
+                return; // Hentikan fungsi agar tidak menjalankan update di bawah
+            }
+        }
+        // --- LOGIKA BARU SELESAI ---
+
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-time-blocker';
         const activityDoc = doc(db, 'artifacts', appId, 'users', userId, 'activities', id);
         try {
@@ -744,7 +776,7 @@ function App() {
                                                     <div
                                                         ref={provided.innerRef}
                                                         {...provided.draggableProps}
-                                                        onClick={() => !act.isRunning && setEditingActivity(act)}
+                                                        onClick={() => setEditingActivity(act)}
                                                         className={`p-5 border rounded-lg shadow-lg flex items-center gap-4 transition-all duration-300 bg-gray-800 ${act.isRunning ? 'border-yellow-500' : 'border-gray-700'} ${!act.isRunning ? 'hover:border-cyan-500 cursor-pointer' : ''} ${snapshot.isDragging ? 'border-cyan-400 shadow-lg' : ''}`}
                                                     >
                                                         <div className="flex-grow">
