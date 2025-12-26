@@ -11,23 +11,24 @@ import {
     onSnapshot,
     query,
     serverTimestamp,
-    setLogLevel
+    setLogLevel,
+    orderBy
 } from 'firebase/firestore';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
+import ReportPage from './ReportPage.jsx';
+import CategoryManager from './CategoryManager.jsx';
 
-// --- Firebase Instances (will be initialized later) ---
+
 let app;
 let auth;
 let db;
 
-// --- Helper function to format time ---
 const formatTime = (totalSeconds) => {
     if (isNaN(totalSeconds)) {
         return '00:00:00';
     }
 
     const isNegative = totalSeconds < 0;
-    // Jika negatif, buat jadi positif untuk perhitungan
     if (isNegative) {
         totalSeconds = -totalSeconds;
     }
@@ -38,11 +39,9 @@ const formatTime = (totalSeconds) => {
 
     const timeString = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     
-    // Tambahkan tanda minus di depan jika aslinya negatif
     return isNegative ? `-${timeString}` : timeString;
 };
 
-// --- Sound Notification Function ---
 const playSound = () => {
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
     if (audioContext.state === 'suspended') {
@@ -53,13 +52,12 @@ const playSound = () => {
     oscillator.connect(gainNode);
     gainNode.connect(audioContext.destination);
     oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(880, audioContext.currentTime); // A5 note
+    oscillator.frequency.setValueAtTime(880, audioContext.currentTime); 
     gainNode.gain.setValueAtTime(0.5, audioContext.currentTime);
     oscillator.start(audioContext.currentTime);
     oscillator.stop(audioContext.currentTime + 0.3);
 };
 
-// --- Edit Modal Component ---
 const EditModal = ({ activity, onSave, onClose }) => {
     const [title, setTitle] = useState(activity.title);
     const initialHours = Math.floor(activity.initialDuration / 3600);
@@ -103,10 +101,9 @@ const EditModal = ({ activity, onSave, onClose }) => {
     );
 };
 
-// --- Fullscreen Timer Modal Component ---
 const FullscreenTimer = ({ activity, nextActivity, remainingTime, estimatedFinishTime, isRunning, onToggle, onReset, onClose }) => {
     const progress = (activity.initialDuration - remainingTime) / activity.initialDuration;
-    const circumference = 2 * Math.PI * 140; // 140 is the radius
+    const circumference = 2 * Math.PI * 140;
     const strokeDashoffset = circumference * (1 - progress);
     const canReset = !isRunning && remainingTime < activity.initialDuration;
 
@@ -175,7 +172,6 @@ const FullscreenTimer = ({ activity, nextActivity, remainingTime, estimatedFinis
     );
 };
 
-// --- Congrats Modal Component ---
 const CongratsModal = ({ onClose }) => {
     return (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
@@ -194,15 +190,17 @@ const CongratsModal = ({ onClose }) => {
 };
 
 
-// --- Main App Component ---
 function App() {
-    // --- State Management ---
     const [activities, setActivities] = useState([]);
     const [title, setTitle] = useState('');
     const [hours, setHours] = useState('');
     const [minutes, setMinutes] = useState('');
     const [seconds, setSeconds] = useState('');
+    const [category, setCategory] = useState('');
     const [showForm, setShowForm] = useState(false);
+    const [showReport, setShowReport] = useState(false);
+    const [showCategoryManager, setShowCategoryManager] = useState(false);
+    const [categories, setCategories] = useState([]);
     const [userId, setUserId] = useState(null);
     const [isFirebaseReady, setIsFirebaseReady] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
@@ -213,7 +211,12 @@ function App() {
     const [tick, setTick] = useState(0);
     const [isGlobalTimerRunning, setGlobalTimerRunning] = useState(false);
     const [notificationPermission, setNotificationPermission] = useState('default');
+
+    const [isAutoPilotMode, setAutoPilotMode] = useState(true); 
+    const beepedTasksRef = useRef(new Set()); 
+
     const completionInProgress = useRef(null);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-time-blocker';
 
     const activitiesRef = useRef(activities);
     useEffect(() => {
@@ -225,7 +228,11 @@ function App() {
         isGlobalTimerRunningRef.current = isGlobalTimerRunning;
     }, [isGlobalTimerRunning]);
 
-    // --- Firebase & Notification Permission Initialization Effect ---
+    const isAutoPilotModeRef = useRef(isAutoPilotMode);
+    useEffect(() => {
+        isAutoPilotModeRef.current = isAutoPilotMode;
+    }, [isAutoPilotMode]);
+
     useEffect(() => {
         setNotificationPermission(Notification.permission);
 
@@ -260,7 +267,6 @@ function App() {
         }
     }, []);
 
-    // --- Authentication Effect ---
     useEffect(() => {
         if (!isFirebaseReady) return;
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -280,11 +286,9 @@ function App() {
         return () => unsubscribe();
     }, [isFirebaseReady]);
 
-    // --- Firestore Real-time Data Listener ---
     useEffect(() => {
         if (!isFirebaseReady || !userId) return;
         setIsLoading(true);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-time-blocker';
         const activitiesCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'activities');
         const q = query(activitiesCollectionRef);
         const unsubscribe = onSnapshot(q, (querySnapshot) => {
@@ -300,7 +304,23 @@ function App() {
         });
         return () => unsubscribe();
     }, [isFirebaseReady, userId]);
+    
+    useEffect(() => {
+        if (!isFirebaseReady || !userId) return;
 
+        const categoriesCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'categories');
+        const q = query(categoriesCollectionRef, orderBy("name")); // Urutkan berdasarkan nama
+
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            const categoriesData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setCategories(categoriesData);
+        }, (err) => {
+            console.error("Firestore Snapshot Error (Categories):", err);
+            setError("Gagal memuat daftar kategori.");
+        });
+
+        return () => unsubscribe();
+    }, [isFirebaseReady, userId, appId]);
     
     // --- Helper to calculate remaining time on-the-fly ---
     const getRemainingTime = useCallback((activity) => {
@@ -352,6 +372,7 @@ function App() {
             endTime: null,
             duration: 0,
             timeSpent: newTotalTimeSpent,
+            completedAt: serverTimestamp()
         });
 
         if (nextTask && wasSessionRunning) {
@@ -368,29 +389,51 @@ function App() {
         completionInProgress.current = null;
     }, [userId, getRemainingTime, updateActivityStatus]);
     
-    // // --- Timer Completion Check Effect (THE FIX) ---
-    // useEffect(() => {
-    //     // Hanya periksa jika timer global seharusnya berjalan
-    //     if (!isGlobalTimerRunningRef.current) {
-    //         return;
-    //     }
+    // --- Timer Completion and Beep Logic ---
+    useEffect(() => {
+        if (!isGlobalTimerRunningRef.current) {
+            return;
+        }
 
-    //     const runningActivity = activitiesRef.current.find(a => a.isRunning && !a.isCompleted);
+        const runningActivity = activitiesRef.current.find(a => a.isRunning && !a.isCompleted);
 
-    //     if (runningActivity) {
-    //         const remainingTime = getRemainingTime(runningActivity);
+        if (runningActivity) {
+            const remainingTime = getRemainingTime(runningActivity);
             
-    //         // Jika waktu habis, selesaikan tugas
-    //         if (remainingTime <= 0) {
-    //             // Gunakan ref 'completionInProgress' untuk mencegah pemanggilan ganda
-    //             if (completionInProgress.current !== runningActivity.id) {
-    //                 console.log(`Timer for "${runningActivity.title}" expired. Completing task.`);
-    //                 // Argumen 'true' menandakan sesi sedang berjalan, sehingga tugas berikutnya akan dimulai secara otomatis
-    //                 handleTaskCompletion(runningActivity, true);
-    //             }
-    //         }
-    //     }
-    // }, [tick, getRemainingTime, handleTaskCompletion]); // Dijalankan setiap detik karena state 'tick'
+            // Jika waktu habis atau sudah minus
+            if (remainingTime <= 0) {
+                // --- MODE AUTO-PILOT ---
+                if (isAutoPilotMode) {
+                    if (completionInProgress.current !== runningActivity.id) {
+                        console.log(`Auto-Pilot: Timer for "${runningActivity.title}" expired. Completing task.`);
+                        handleTaskCompletion(runningActivity, true);
+                    }
+                } 
+                // --- MODE MANUAL (DI SINI PERUBAHANNYA) ---
+                else {
+                    // Cek apakah kita belum membunyikan beep & notifikasi untuk tugas ini.
+                    if (!beepedTasksRef.current.has(runningActivity.id)) {
+                        console.log(`Manual Mode: Timer for "${runningActivity.title}" hit zero. Beeping and notifying.`);
+                        
+                        // 1. TAMPILKAN NOTIFIKASI (JIKA DIIZINKAN)
+                        if (Notification.permission === 'granted') {
+                            new Notification("Waktu Habis!", {
+                                body: `Tugas "${runningActivity.title}" telah selesai. Timer sekarang menghitung maju.`,
+                                // 'tag' berguna untuk mencegah notifikasi yang sama menumpuk
+                                tag: `timeblocker-task-${runningActivity.id}` 
+                            });
+                        }
+                        
+                        // 2. MAINKAN SUARA (TETAP SAMA)
+                        playSound();
+                        
+                        // 3. Tandai bahwa tugas ini sudah diberi notifikasi & beep
+                        beepedTasksRef.current.add(runningActivity.id);
+                    }
+                }
+            }
+        }
+    }, [tick, getRemainingTime, handleTaskCompletion, isAutoPilotMode]);
 
     // --- Global Timer Tick ---
     useEffect(() => {
@@ -406,13 +449,22 @@ function App() {
             const runningActivity = activitiesRef.current.find(a => a.isRunning && !a.isCompleted);
             if (runningActivity) {
                 const endTimeMs = runningActivity.endTime?.toMillis();
+
+                // Cek apakah waktu akhir sudah terlewat
                 if (endTimeMs && Date.now() >= endTimeMs) {
-                    console.log("Catching up on missed completion...");
-                    handleTaskCompletion(runningActivity, true); // Assume session was running
+                    
+                    // --- INI PERBAIKANNYA ---
+                    // Hanya jalankan logika 'catch-up' jika dalam Mode Auto-Pilot.
+                    if (isAutoPilotModeRef.current) {
+                        console.log("Catching up on missed completion in Auto-Pilot mode...");
+                        handleTaskCompletion(runningActivity, true);
+                    } else {
+                        console.log("Tab became visible in Manual mode, no action needed.");
+                    }
                 }
             }
         }
-    }, [handleTaskCompletion]);
+    }, [handleTaskCompletion]); // Dependency array tidak perlu diubah
 
     useEffect(() => {
         document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -476,6 +528,17 @@ function App() {
         }
     }, []);
 
+     useEffect(() => {
+        const storedMode = localStorage.getItem("timeblocker_autoPilotMode");
+        if (storedMode !== null) {
+            setAutoPilotMode(JSON.parse(storedMode));
+        }
+    }, []);
+
+    useEffect(() => {
+        localStorage.setItem("timeblocker_autoPilotMode", JSON.stringify(isAutoPilotMode));
+    }, [isAutoPilotMode]);
+
     useEffect(() => {
         localStorage.setItem("timeblocker_showForm", JSON.stringify(showForm));
     }, [showForm]);
@@ -532,6 +595,7 @@ function App() {
 
     const handleReset = async (activity) => {
         if (!userId || activity.isCompleted) return;
+        beepedTasksRef.current.delete(activity.id); // Hapus dari daftar yg sudah beep
         try {
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-time-blocker';
             const activityDoc = doc(db, 'artifacts', appId, 'users', userId, 'activities', activity.id);
@@ -568,12 +632,14 @@ function App() {
             isCompleted: false,
             order: activities.length,
             timeSpent: 0,
+            category: category.trim() || "Lainnya",
+            completedAt: null
         };
         try {
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-time-blocker';
             const activitiesCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'activities');
             await addDoc(activitiesCollectionRef, newActivity);
-            setTitle(''); setHours(''); setMinutes(''); setSeconds(''); setShowForm(false);
+            setTitle(''); setHours(''); setMinutes(''); setSeconds(''); setCategory(''); setShowForm(false);
         } catch (err) {
             console.error("Error adding activity: ", err);
             setError("Could not save the new activity.");
@@ -589,6 +655,44 @@ function App() {
         } catch (err) {
             console.error("Error deleting activity: ", err);
             setError("Could not delete the activity.");
+        }
+    };
+
+    const handleDuplicateActivity = async (idToDuplicate) => {
+        if (!userId) return;
+
+        // 1. Temukan tugas asli yang akan diduplikasi
+        const originalActivity = activities.find(act => act.id === idToDuplicate);
+        if (!originalActivity) {
+            console.error("Activity to duplicate not found!");
+            setError("Tugas yang akan diduplikasi tidak ditemukan.");
+            return;
+        }
+
+        // 2. Buat objek tugas baru sebagai salinan
+        const duplicatedActivity = {
+            title: originalActivity.title, // Tambahkan '(copy)' agar mudah dibedakan
+            initialDuration: originalActivity.initialDuration,
+            category: originalActivity.category || "Lainnya",
+
+            // Atur ulang field-field ini ke kondisi awal
+            duration: originalActivity.initialDuration,
+            timeSpent: 0,
+            isRunning: false,
+            isCompleted: false,
+            endTime: null,
+            order: activities.length, // Letakkan di paling bawah daftar
+            createdAt: serverTimestamp(),
+            completedAt: null,
+        };
+
+        // 3. Simpan tugas baru ini ke Firestore
+        try {
+            const activitiesCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'activities');
+            await addDoc(activitiesCollectionRef, duplicatedActivity);
+        } catch (err) {
+            console.error("Error duplicating activity: ", err);
+            setError("Gagal menduplikasi tugas.");
         }
     };
 
@@ -616,6 +720,8 @@ function App() {
             movedItem.isCompleted = false;
             movedItem.duration = movedItem.initialDuration;
             activeTasks.splice(destination.index, 0, movedItem);
+
+            beepedTasksRef.current.delete(movedItem.id); // Hapus agar bisa beep lagi
 
             const updates = [];
             const movedItemRef = doc(db, 'artifacts', appId, 'users', userId, 'activities', movedItem.id);
@@ -667,6 +773,7 @@ function App() {
     const activeTasksForRender = activities.filter(a => !a.isCompleted).sort((a, b) => a.order - b.order);
     const completedTasksForRender = activities.filter(a => a.isCompleted).sort((a, b) => a.order - b.order);
     const runningActivity = activeTasksForRender.find(a => a.isRunning);
+    
     const fullscreenTaskObject = fullscreenActivityId ? activities.find(a => a.id === fullscreenActivityId) : null;
     
     let nextActivityForFullscreen = null;
@@ -701,9 +808,30 @@ function App() {
             {showCongratsModal && (
                 <CongratsModal onClose={() => setShowCongratsModal(false)} />
             )}
+
+            {showReport && (
+                <ReportPage 
+                    db={db}
+                    userId={userId}
+                    onClose={() => setShowReport(false)}
+                    appId={appId}
+                    categories={categories}
+                />
+            )}
+
+            {showCategoryManager && (
+                <CategoryManager
+                    db={db}
+                    userId={userId}
+                    appId={appId}
+                    categories={categories}
+                    onClose={() => setShowCategoryManager(false)}
+                />
+            )}
+
             <div className="max-w-2xl mx-auto">
                 <header className="text-center mb-8">
-                    <h1 className="text-4xl sm:text-5xl font-bold text-cyan-400">TimeBlock</h1>
+                    <h1 className="text-4xl sm:text-5xl font-bold text-cyan-400">ReeeTimeBlock</h1>
                     <p className="text-gray-400 mt-2">Focus on what matters, one block at a time.</p>
                      {userId && (<div className="mt-4 text-xs text-gray-500 bg-gray-800 rounded-full px-3 py-1 inline-block">User ID: {userId}</div>)}
                 </header>
@@ -718,7 +846,10 @@ function App() {
                 )}
 
                 <div className="mb-6 space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
+                    {/* Baris untuk tombol-tombol aksi */}
+                    {/* INI KODE BARU YANG SUDAH DIPERBAIKI */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {/* Tombol Tambah */}
                         <button 
                             onClick={() => setShowForm(!showForm)} 
                             disabled={!isFirebaseReady} 
@@ -729,36 +860,89 @@ function App() {
                             }`}
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                            {showForm ? 'Close' : 'Add'}
+                            <span>{showForm ? 'Tutup' : 'Tambah'}</span>
                         </button>
+                        
+                        {/* Tombol Fokus */}
                         <button 
                             onClick={() => runningActivity && setFullscreenActivityId(runningActivity.id)}
                             disabled={!runningActivity}
                             className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg shadow-indigo-500/20 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed disabled:transform-none"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
-                            Focus
+                            <span>Fokus</span>
+                        </button>
+                        
+                        {/* Tombol Mode */}
+                        <button
+                            onClick={() => setAutoPilotMode(prev => !prev)}
+                            className={`w-full text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg text-sm flex items-center justify-center gap-2 ${
+                                isAutoPilotMode 
+                                ? 'bg-purple-600 hover:bg-purple-700 shadow-purple-500/20' 
+                                : 'bg-gray-600 hover:bg-gray-500 shadow-gray-500/20'
+                            }`}
+                        >
+                            <span>{isAutoPilotMode ? 'Auto' : 'Manual'}</span>
+                        </button>
+
+                        {/* Tombol Laporan */}
+                        <button 
+                            onClick={() => setShowReport(true)}
+                            className="w-full flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg"
+                        >
+                            <span>Laporan</span>
                         </button>
                     </div>
+
+                    {/* Tombol Aksi Utama (Start/Pause) tetap di bawah agar menonjol */}
                     <button 
                         onClick={handleGlobalToggle} 
                         disabled={!isFirebaseReady || activeTasksForRender.length === 0}
                         className={`w-full font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg ${isGlobalTimerRunning ? 'bg-yellow-500 hover:bg-yellow-600 shadow-yellow-500/20' : 'bg-blue-500 hover:bg-blue-600 shadow-blue-500/20'} disabled:bg-gray-600 disabled:cursor-not-allowed disabled:transform-none`}
                     >
-                        {isGlobalTimerRunning ? 'Pause Session' : 'Start Session'}
+                        {isGlobalTimerRunning ? 'Jeda Sesi' : 'Mulai Sesi'}
                     </button>
                 </div>
 
+                {/* INI KODE BARU YANG SUDAH DIPERBAIKI */}
                 {showForm && (
                     <div className="mb-6 p-5 bg-gray-800 border border-gray-700 rounded-lg shadow-2xl">
-                        <input className="w-full mb-4 p-3 bg-gray-700 border-2 border-gray-600 rounded-md focus:outline-none focus:border-cyan-500 transition" placeholder="What are you working on?" value={title} onChange={(e) => setTitle(e.target.value)} />
+                        <input 
+                            className="w-full mb-4 p-3 bg-gray-700 border-2 border-gray-600 rounded-md focus:outline-none focus:border-cyan-500 transition" 
+                            placeholder="What are you working on?" 
+                            value={title} 
+                            onChange={(e) => setTitle(e.target.value)} 
+                        />
+                        
+                        {/* Dropdown untuk memilih kategori */}
+                        <select
+                            className="w-full mb-2 p-3 bg-gray-700 border-2 border-gray-600 rounded-md focus:outline-none focus:border-cyan-500 transition"
+                            value={category}
+                            onChange={(e) => setCategory(e.target.value)}
+                        >
+                            <option value="">-- Choose Category --</option>
+                            {categories.map((cat) => (
+                                <option key={cat.id} value={cat.name}>{cat.name}</option>
+                            ))}
+                        </select>
+
+                        {/* Tombol baru untuk mengelola kategori */}
+                        <button 
+                            onClick={() => setShowCategoryManager(true)}
+                            type="button"
+                            className="w-full mb-4 py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition text-sm"
+                        >
+                            Kelola Kategori
+                        </button>
+
                         <div className="grid grid-cols-3 gap-3 mb-4">
                             <input type="number" value={hours} onChange={(e) => setHours(e.target.value)} placeholder="Hours" className="p-3 bg-gray-700 border-2 border-gray-600 rounded-md focus:outline-none focus:border-cyan-500 transition" min="0" />
                             <input type="number" value={minutes} onChange={(e) => setMinutes(e.target.value)} placeholder="Minutes" className="p-3 bg-gray-700 border-2 border-gray-600 rounded-md focus:outline-none focus:border-cyan-500 transition" min="0" max="59" />
                             <input type="number" value={seconds} onChange={(e) => setSeconds(e.target.value)} placeholder="Seconds" className="p-3 bg-gray-700 border-2 border-gray-600 rounded-md focus:outline-none focus:border-cyan-500 transition" min="0" max="59" />
                         </div>
+
                         <div className="flex justify-end gap-3">
-                            <button onClick={() => setShowForm(false)} className="px-5 py-2 bg-gray-600 hover:bg-gray-500 text-white font-semibold rounded-lg transition">Cancel</button>
+                            <button onClick={() => setShowForm(false)} className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition">Cancel</button>
                             <button onClick={addActivity} className="px-5 py-2 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg transition">Save Activity</button>
                         </div>
                     </div>
@@ -781,14 +965,32 @@ function App() {
                                                     >
                                                         <div className="flex-grow">
                                                             <h2 className="text-xl font-semibold text-cyan-300">{act.title}</h2>
+                                                            {act.category && (
+                                                                <span className="bg-cyan-900/50 text-cyan-300 text-xs font-semibold px-2.5 py-1 rounded-full">
+                                                                    {act.category}
+                                                                </span>
+                                                            )}
                                                             <p className="text-gray-400 text-sm">Initial Duration: {formatTime(act.initialDuration)}</p>
                                                             {estimatedTimes.get(act.id) && <p className="text-sm text-cyan-400/80">Est. Finish: {estimatedTimes.get(act.id).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</p>}
                                                             <p className="text-2xl sm:text-3xl font-mono font-bold text-white my-2">{formatTime(getRemainingTime(act))}</p>
                                                         </div>
                                                         <div className="flex items-center gap-2 flex-shrink-0">
                                                             {!act.isRunning && act.duration < act.initialDuration && <button onClick={(e) => { e.stopPropagation(); handleReset(act); }} className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded-full transition transform hover:scale-110" aria-label="Reset timer"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M21 21v-5h-5"></path></svg></button>}
+
                                                             <button onClick={(e) => { e.stopPropagation(); handleTaskCompletion(act, isGlobalTimerRunning); }} className="px-3 py-1 text-xs font-bold bg-green-600 hover:bg-green-500 text-white rounded-lg transition transform hover:scale-105" aria-label="Mark as Done">Finish</button>
-                                                            <button onClick={(e) => { e.stopPropagation(); deleteActivity(act.id); }} className="p-2 bg-red-600 hover:bg-red-700 text-white rounded-full transition transform hover:scale-110" aria-label="Delete activity"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg></button>
+
+                                                            {/* --- TOMBOL DUPLIKAT BARU --- */}
+                                                            <button 
+                                                                onClick={(e) => { e.stopPropagation(); handleDuplicateActivity(act.id); }} 
+                                                                className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-full transition transform hover:scale-110" 
+                                                                aria-label="Duplicate activity"
+                                                                title="Duplikasi Tugas"
+                                                            >
+                                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                                            </button>
+
+                                                            <button onClick={(e) => { e.stopPropagation(); deleteActivity(act.id); }} className="p-2 bg-red-600 hover:bg-red-700 text-white rounded-full transition transform hover:scale-110" aria-label="Delete activity"><svg xmlns="http://www.w.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg></button>
+
                                                             <div {...provided.dragHandleProps} className="p-2 cursor-grab touch-none" onClick={(e) => e.stopPropagation()}><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-500"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg></div>
                                                         </div>
                                                     </div>
@@ -823,6 +1025,11 @@ function App() {
                                                             >
                                                                 <div className="flex-grow">
                                                                     <h2 className="text-xl font-semibold text-cyan-300">{act.title}</h2>
+                                                                    {act.category && (
+                                                                        <span className="bg-cyan-900/50 text-cyan-300 text-xs font-semibold px-2.5 py-1 rounded-full">
+                                                                            {act.category}
+                                                                        </span>
+                                                                    )}
                                                                     <p className="text-gray-400 text-sm">Initial Duration: {formatTime(act.initialDuration)}</p>
                                                                     <p className="text-gray-400 text-sm">Time Spent: {formatTime(act.timeSpent)}</p>
                                                                     <p className="text-2xl sm:text-3xl font-mono font-bold text-white my-2">{formatTime(act.initialDuration)}</p>
